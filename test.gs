@@ -12,7 +12,10 @@ function runAllTests() {
   var tests = [
     test_consultantWfhCap,
     test_consultantLeaveOrWfhCap,
+    test_consultantCapAllowsHalfDayAtBoundary,
+    test_consultantCapRejectsAboveBoundaryWithHalf,
     test_consultantWfhBlockedWhenLeaveFull,
+    test_consultantWfhAllowedWhenLeaveBelowThreshold,
     test_personalFridayWfhCap,
     test_sameWeekdayStreak,
     test_noWfhStraddleWeekend,
@@ -100,6 +103,7 @@ function test_consultantWfhCap() {
 }
 
 function test_consultantLeaveOrWfhCap() {
+  // 4 full records already → candidate would push to 5 > 4 → reject
   var existing = [
     makeReq_('Albert', '2026-05-13', 'WFH'),
     makeReq_('YP',     '2026-05-13', 'FULL_LEAVE'),
@@ -110,15 +114,50 @@ function test_consultantLeaveOrWfhCap() {
   assertReject_(v, '4 人上限');
 }
 
+function test_consultantCapAllowsHalfDayAtBoundary() {
+  // 3 full + 1 half = 3.5 existing; adding a half = 4.0 → exactly at cap, allowed.
+  var existing = [
+    makeReq_('Albert', '2026-05-13', 'FULL_LEAVE'),
+    makeReq_('YP',     '2026-05-13', 'FULL_LEAVE'),
+    makeReq_('Cheer',  '2026-05-13', 'WFH'),
+    makeReq_('News',   '2026-05-13', 'HALF_LEAVE_AM')
+  ];
+  var v = evalWith_(makeReq_('Ivan', '2026-05-13', 'HALF_LEAVE_PM'), existing);
+  assert_(v.allowed, 'expected allowed at total weight 4.0, got: ' + v.reasons.join('|'));
+}
+
+function test_consultantCapRejectsAboveBoundaryWithHalf() {
+  // 4 full existing; candidate half = 4.5 > 4 → reject
+  var existing = [
+    makeReq_('Albert', '2026-05-13', 'WFH'),
+    makeReq_('YP',     '2026-05-13', 'FULL_LEAVE'),
+    makeReq_('Cheer',  '2026-05-13', 'WFH'),
+    makeReq_('News',   '2026-05-13', 'FULL_LEAVE')
+  ];
+  var v = evalWith_(makeReq_('Ivan', '2026-05-13', 'HALF_LEAVE_AM'), existing);
+  assertReject_(v, '4 人上限');
+}
+
 function test_consultantWfhBlockedWhenLeaveFull() {
-  // Wednesday with 3 leaves already → no WFH
+  // Wednesday with leave weight >= 3 → no WFH
+  var existing = [
+    makeReq_('Albert', '2026-05-13', 'FULL_LEAVE'),
+    makeReq_('YP',     '2026-05-13', 'FULL_LEAVE'),
+    makeReq_('Cheer',  '2026-05-13', 'FULL_LEAVE')
+  ];
+  var v = evalWith_(makeReq_('Ivan', '2026-05-13', 'WFH'), existing);
+  assertReject_(v, '不再開放 WFH');
+}
+
+function test_consultantWfhAllowedWhenLeaveBelowThreshold() {
+  // 2 full + 1 half = 2.5 < 3 → WFH still allowed
   var existing = [
     makeReq_('Albert', '2026-05-13', 'FULL_LEAVE'),
     makeReq_('YP',     '2026-05-13', 'FULL_LEAVE'),
     makeReq_('Cheer',  '2026-05-13', 'HALF_LEAVE_AM')
   ];
   var v = evalWith_(makeReq_('Ivan', '2026-05-13', 'WFH'), existing);
-  assertReject_(v, '請假已達 3 人');
+  assert_(v.allowed, 'expected allowed at leave weight 2.5, got: ' + v.reasons.join('|'));
 }
 
 function test_personalFridayWfhCap() {

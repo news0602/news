@@ -121,20 +121,26 @@ function rule_consultantWfhCap_(req, ctx) {
 }
 
 function rule_consultantLeaveOrWfhCap_(req, ctx) {
+  // 上限 4 人/天,半天算 0.5。
   var emp = employeeByName_(ctx.employees, req.name_en);
   if (!emp || emp.team !== CONSULTANT_TEAM) return null;
   var sameDay = ctx.requests.filter(function (r) {
     return sameDay_(r.date, req.date)
       && teamOf_(ctx.employees, r.name_en) === CONSULTANT_TEAM;
   });
-  if (sameDay.length >= 4) {
-    return { reason: '顧問組當日 leave + WFH 已達 4 人上限', conflicts: sameDay };
+  var existingWeight = sumWeights_(sameDay);
+  var total = existingWeight + weightOf_(req.type);
+  if (total > 4) {
+    return {
+      reason: '顧問組當日 leave + WFH 合計已達 ' + formatWeight_(total) + ' 人,超過 4 人上限',
+      conflicts: sameDay
+    };
   }
   return null;
 }
 
 function rule_consultantWfhBlockedByFullLeave_(req, ctx) {
-  // Mon-Thu only; if leave (incl. half) already at 3 → no WFH.
+  // Mon-Thu only; 同日請假合計達 3 人(半天算 0.5)→ 不再開放 WFH。
   if (req.type !== 'WFH') return null;
   var dow = req.date.getDay();
   if (dow < 1 || dow > 4) return null;
@@ -145,8 +151,12 @@ function rule_consultantWfhBlockedByFullLeave_(req, ctx) {
       && teamOf_(ctx.employees, r.name_en) === CONSULTANT_TEAM
       && isLeave_(r.type);
   });
-  if (leavesToday.length >= 3) {
-    return { reason: '顧問組當日請假已達 3 人,不再開放 WFH', conflicts: leavesToday };
+  var leaveWeight = sumWeights_(leavesToday);
+  if (leaveWeight >= 3) {
+    return {
+      reason: '顧問組當日請假合計 ' + formatWeight_(leaveWeight) + ' 人,不再開放 WFH',
+      conflicts: leavesToday
+    };
   }
   return null;
 }
@@ -325,6 +335,19 @@ function teamOf_(employees, name) {
 
 function isLeave_(type) {
   return type === 'FULL_LEAVE' || type === 'HALF_LEAVE_AM' || type === 'HALF_LEAVE_PM';
+}
+
+function weightOf_(type) {
+  if (type === 'HALF_LEAVE_AM' || type === 'HALF_LEAVE_PM') return 0.5;
+  return 1;
+}
+
+function sumWeights_(requests) {
+  return requests.reduce(function (s, r) { return s + weightOf_(r.type); }, 0);
+}
+
+function formatWeight_(n) {
+  return (Math.round(n * 10) / 10).toString();
 }
 
 function weekdayName_(dow) {
