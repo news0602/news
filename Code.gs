@@ -43,13 +43,15 @@ function include(name) {
  */
 function getBootstrap(monthIso) {
   var user = getCurrentUser_();
+  var admins = listAdmins_();
   if (user.role === 'UNAUTHORIZED') {
-    return { user: user };
+    return { user: user, admins: admins };
   }
   var anchor = monthIso ? parseIsoDate_(monthIso + '-01') : new Date();
   var range = monthWindow_(anchor, 1); // prev/current/next month
   return {
     user: user,
+    admins: admins,
     employees: listEmployees_(),
     holidays: listHolidaysBetween_(range.start, range.end),
     requests: listRequestsBetween_(range.start, range.end),
@@ -60,6 +62,7 @@ function getBootstrap(monthIso) {
 
 /** Refresh just the dynamic parts after a write/delete. */
 function getCalendarData(monthIso) {
+  requireAuthenticated_();
   var anchor = monthIso ? parseIsoDate_(monthIso + '-01') : new Date();
   var range = monthWindow_(anchor, 1);
   return {

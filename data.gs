@@ -67,6 +67,15 @@ function headerIndex_(headers, name) {
 
 /* ---------------- Employees ---------------- */
 
+function listAdmins_() {
+  var all = listEmployees_(/* includeInactive */ false);
+  return all
+    .filter(function (e) { return e.is_admin; })
+    .map(function (e) {
+      return { name_en: e.name_en, name_zh: e.name_zh, email: e.email };
+    });
+}
+
 function listEmployees_(includeInactive) {
   var t = readTable_(SHEET_EMPLOYEES);
   var out = [];

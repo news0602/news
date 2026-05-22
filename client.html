@@ -16,6 +16,7 @@ var TYPE_ICON = {
 
 var state = {
   user: null,
+  admins: [],
   employees: [],
   holidays: [],
   requests: [],
@@ -52,6 +53,7 @@ function bootstrap(monthIso) {
   call('getBootstrap', monthIso || null)
     .then(function (b) {
       state.user = b.user;
+      state.admins = b.admins || [];
       if (!b.user || b.user.role === 'UNAUTHORIZED') {
         renderUnauthorized();
         return;
@@ -91,8 +93,22 @@ function renderUnauthorized() {
     '<div class="unauth-box">'
     + '<h2>未授權使用</h2>'
     + '<p>您的 Google 帳號 <b>' + escapeHtml(state.user.email || '(未登入)') + '</b> 未列入員工名單。</p>'
-    + '<p>請聯絡管理員 (linkei1983@gmail.com) 將您加入後再試。</p>'
+    + '<p>請聯絡管理員 ' + adminContactHtml() + ' 將您加入後再試。</p>'
     + '</div>';
+}
+
+function adminContactHtml() {
+  if (!state.admins || state.admins.length === 0) return '(尚未設定)';
+  return state.admins.map(function (a) {
+    var label = escapeHtml(a.name_en || a.email);
+    if (!a.email) return label;
+    return '<a href="mailto:' + escapeAttr(a.email) + '">' + label + '</a>';
+  }).join('、');
+}
+
+function adminContactText() {
+  if (!state.admins || state.admins.length === 0) return '(尚未設定管理員)';
+  return state.admins.map(function (a) { return a.name_en || a.email; }).join(' / ');
 }
 
 function renderApp() {
@@ -345,7 +361,11 @@ function openDayModal(dateIso) {
     b.addEventListener('click', function () {
       if (!confirm('確定刪除此筆紀錄?')) return;
       call('deleteRequest', b.getAttribute('data-id'))
-        .then(function () {
+        .then(function (res) {
+          if (!res || !res.ok) {
+            toast('刪除失敗:找不到該筆紀錄', 'bad');
+            return;
+          }
           toast('已刪除', 'good');
           closeModal();
           refreshCalendar();
@@ -396,9 +416,9 @@ function renderVerdict(verdict, isMember, allowOverride) {
   var el = $('#m-verdict');
   if (verdict.allowed) {
     var msg = isMember
-      ? '✓ 可以申請。請通知主管 (linkei1983@gmail.com) 為你登記。'
+      ? '✓ 可以申請。請通知主管 ' + adminContactText() + ' 為你登記。'
       : '✓ 通過所有規則,可直接寫入。';
-    el.innerHTML = '<div class="verdict allowed">' + msg + '</div>';
+    el.innerHTML = '<div class="verdict allowed">' + escapeHtml(msg) + '</div>';
   } else {
     var lis = verdict.reasons.map(function (r) { return '<li>' + escapeHtml(r) + '</li>'; }).join('');
     var prefix = isMember
