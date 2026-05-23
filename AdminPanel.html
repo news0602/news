@@ -47,7 +47,7 @@
       <h1>管理面板</h1>
       <span class="pill admin">管理員</span>
       <span class="user-info" id="me"></span>
-      <span style="margin-left:12px"><a class="admin-link" href="?page=calendar">← 回到日曆</a></span>
+      <span style="margin-left:12px"><a class="admin-link" id="backLink" href="#" target="_top">← 回到日曆</a></span>
     </header>
     <div class="container">
 
@@ -131,6 +131,7 @@
         return;
       }
       $('#me').textContent = b.user.name_en + ' (' + b.user.email + ')';
+      if (b.webAppUrl) $('#backLink').setAttribute('href', b.webAppUrl + '?page=calendar');
       loadEmployees();
     }).catch(function (e) { toast(e.message || '載入失敗', 'bad'); });
 

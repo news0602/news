@@ -44,14 +44,16 @@ function include(name) {
 function getBootstrap(monthIso) {
   var user = getCurrentUser_();
   var admins = listAdmins_();
+  var webAppUrl = ScriptApp.getService().getUrl();
   if (user.role === 'UNAUTHORIZED') {
-    return { user: user, admins: admins };
+    return { user: user, admins: admins, webAppUrl: webAppUrl };
   }
   var anchor = monthIso ? parseIsoDate_(monthIso + '-01') : new Date();
   var range = monthWindow_(anchor, 1); // prev/current/next month
   return {
     user: user,
     admins: admins,
+    webAppUrl: webAppUrl,
     employees: listEmployees_(),
     holidays: listHolidaysBetween_(range.start, range.end),
     requests: listRequestsBetween_(range.start, range.end),

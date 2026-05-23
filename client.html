@@ -17,6 +17,7 @@ var TYPE_ICON = {
 var state = {
   user: null,
   admins: [],
+  webAppUrl: '',
   employees: [],
   holidays: [],
   requests: [],
@@ -54,6 +55,7 @@ function bootstrap(monthIso) {
     .then(function (b) {
       state.user = b.user;
       state.admins = b.admins || [];
+      state.webAppUrl = b.webAppUrl || '';
       if (!b.user || b.user.role === 'UNAUTHORIZED') {
         renderUnauthorized();
         return;
@@ -134,7 +136,7 @@ function headerHtml() {
   var roleClass = u.role === 'ADMIN' ? 'admin' : 'member';
   var roleLabel = u.role === 'ADMIN' ? '管理員' : '組員';
   var adminLink = u.role === 'ADMIN'
-    ? '<a class="admin-link" href="?page=admin" target="_blank">管理面板 ↗</a>'
+    ? '<a class="admin-link" href="' + escapeAttr(state.webAppUrl) + '?page=admin" target="_top">管理面板 ↗</a>'
     : '';
   return ''
     + '<header class="top">'
