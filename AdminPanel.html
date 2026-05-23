@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <title>管理面板 — Team Leave / WFH Planner</title>
+  <?!= include('styles') ?>
+  <style>
+    .admin-section { margin-bottom: 24px; }
+    .admin-section h2 { margin: 0 0 8px; font-size: 16px; }
+    .admin-section .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px 16px;
+    }
+    textarea#csv {
+      width: 100%;
+      min-height: 180px;
+      font-family: ui-monospace, Menlo, Consolas, monospace;
+      font-size: 12px;
+    }
+    .emp-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    .emp-table th, .emp-table td {
+      padding: 6px 8px;
+      border-bottom: 1px solid var(--border);
+      text-align: left;
+    }
+    .emp-table input, .emp-table select {
+      padding: 4px 6px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      font: inherit;
+    }
+    .emp-table input[type=text] { width: 100%; }
+    .results { font-size: 12px; margin-top: 8px; }
+    .results .err { color: var(--bad); }
+    .results .ok { color: var(--good); }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <header class="top">
+      <h1>管理面板</h1>
+      <span class="pill admin">管理員</span>
+      <span class="user-info" id="me"></span>
+      <span style="margin-left:12px"><a class="admin-link" id="backLink" href="#" target="_top">← 回到日曆</a></span>
+    </header>
+    <div class="container">
+
+      <div class="admin-section">
+        <h2>行事曆匯入</h2>
+        <div class="card">
+          <p style="margin-top:0;color:var(--muted)">
+            上傳整年國定假日與補班日。CSV 格式三欄:<code>date,type,name</code>,
+            <code>type</code> 為 <code>HOLIDAY</code> 或 <code>MAKEUP_WORKDAY</code>。
+            匯入會<b>覆寫</b>整個 Holidays 分頁。
+          </p>
+          <textarea id="csv" placeholder="date,type,name&#10;2026-01-01,HOLIDAY,中華民國開國紀念日&#10;2026-02-27,MAKEUP_WORKDAY,補行上班"></textarea>
+          <div style="margin-top:8px">
+            <button class="btn primary" id="importBtn">匯入並覆寫</button>
+          </div>
+          <div class="results" id="importResults"></div>
+        </div>
+      </div>
+
+      <div class="admin-section">
+        <h2>員工管理</h2>
+        <div class="card">
+          <p style="margin-top:0;color:var(--muted)">
+            新增或更新員工資料。<b>name_en</b> 為主鍵 — 重複的英文名會被視為同一人並覆蓋。
+            另也可直接到 Google Sheet 的 Employees 分頁編輯。
+          </p>
+          <table class="emp-table" id="empTable">
+            <thead>
+              <tr>
+                <th>name_en</th>
+                <th>name_zh</th>
+                <th>team</th>
+                <th>email</th>
+                <th>admin</th>
+                <th>active</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="empBody"></tbody>
+          </table>
+          <div style="margin-top:10px">
+            <button class="btn" id="addRow">+ 新增空白列</button>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+  /* global google */
+
+  function $(s, r) { return (r || document).querySelector(s); }
+  function $$(s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); }
+
+  function call(fn, payload) {
+    return new Promise(function (resolve, reject) {
+      google.script.run
+        .withSuccessHandler(resolve)
+        .withFailureHandler(function (err) { reject(err); })
+        [fn](payload);
+    });
+  }
+  function toast(msg, kind) {
+    var el = $('#toast');
+    el.textContent = msg;
+    el.className = 'toast show ' + (kind || '');
+    setTimeout(function () { el.className = 'toast ' + (kind || ''); }, 2500);
+  }
+  function escapeHtml(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  document.addEventListener('DOMContentLoaded', function () {
+    call('getBootstrap', null).then(function (b) {
+      if (!b.user || b.user.role !== 'ADMIN') {
+        document.body.innerHTML = '<div class="unauth-box"><h2>非管理員</h2><p>您不是管理員,無法存取此頁。</p></div>';
+        return;
+      }
+      $('#me').textContent = b.user.name_en + ' (' + b.user.email + ')';
+      if (b.webAppUrl) $('#backLink').setAttribute('href', b.webAppUrl + '?page=calendar');
+      loadEmployees();
+    }).catch(function (e) { toast(e.message || '載入失敗', 'bad'); });
+
+    $('#importBtn').addEventListener('click', importCsv);
+    $('#addRow').addEventListener('click', function () { addEmpRow(); });
+  });
+
+  function importCsv() {
+    var csv = $('#csv').value;
+    if (!csv.trim()) { toast('請貼上 CSV 內容', 'bad'); return; }
+    if (!confirm('將覆寫整個 Holidays 分頁,確定繼續?')) return;
+    $('#importBtn').disabled = true;
+    call('importHolidaysCsv', csv)
+      .then(function (res) {
+        var html = res.ok
+          ? '<span class="ok">✓ 已匯入 ' + res.inserted + ' 筆。</span>'
+          : '<span class="err">✗ 無有效資料</span>';
+        if (res.errors && res.errors.length) {
+          html += '<ul>' + res.errors.map(function (e) {
+            return '<li class="err">第 ' + e.line + ' 行: ' + escapeHtml(e.error) + '</li>';
+          }).join('') + '</ul>';
+        }
+        $('#importResults').innerHTML = html;
+        if (res.ok) toast('匯入成功', 'good');
+      })
+      .catch(function (e) { toast(e.message || '匯入失敗', 'bad'); })
+      .then(function () { $('#importBtn').disabled = false; });
+  }
+
+  function loadEmployees() {
+    call('listEmployeesAdmin', null).then(function (rows) {
+      $('#empBody').innerHTML = '';
+      rows.forEach(addEmpRow);
+    }).catch(function (e) { toast(e.message || '載入員工失敗', 'bad'); });
+  }
+
+  function addEmpRow(emp) {
+    emp = emp || { name_en: '', name_zh: '', team: 'CONSULTANT', email: '', is_admin: false, active: true };
+    var tr = document.createElement('tr');
+    tr.innerHTML =
+        '<td><input type="text" data-k="name_en" value="' + escapeHtml(emp.name_en) + '"></td>'
+      + '<td><input type="text" data-k="name_zh" value="' + escapeHtml(emp.name_zh || '') + '"></td>'
+      + '<td><select data-k="team">'
+      +   '<option value="CONSULTANT"' + (emp.team === 'CONSULTANT' ? ' selected' : '') + '>顧問組</option>'
+      +   '<option value="MAINTENANCE"' + (emp.team === 'MAINTENANCE' ? ' selected' : '') + '>維護組</option>'
+      + '</select></td>'
+      + '<td><input type="text" data-k="email" value="' + escapeHtml(emp.email || '') + '"></td>'
+      + '<td><input type="checkbox" data-k="is_admin"' + (emp.is_admin ? ' checked' : '') + '></td>'
+      + '<td><input type="checkbox" data-k="active"' + (emp.active !== false ? ' checked' : '') + '></td>'
+      + '<td><button class="btn primary save-row">儲存</button></td>';
+    $('#empBody').appendChild(tr);
+    tr.querySelector('.save-row').addEventListener('click', function () { saveRow(tr); });
+  }
+
+  function saveRow(tr) {
+    var payload = {};
+    $$('input, select', tr).forEach(function (el) {
+      var k = el.getAttribute('data-k');
+      if (!k) return;
+      if (el.type === 'checkbox') payload[k] = el.checked;
+      else payload[k] = el.value;
+    });
+    if (!payload.name_en) { toast('name_en 必填', 'bad'); return; }
+    call('upsertEmployee', payload)
+      .then(function () { toast('已儲存 ' + payload.name_en, 'good'); })
+      .catch(function (e) { toast(e.message || '儲存失敗', 'bad'); });
+  }
+  </script>
+</body>
+</html>

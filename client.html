@@ -1,0 +1,492 @@
+<script>
+/* global google */
+
+var TYPE_LABEL = {
+  FULL_LEAVE: '請假',
+  HALF_LEAVE_AM: '半天(上午)',
+  HALF_LEAVE_PM: '半天(下午)',
+  WFH: 'WFH'
+};
+var TYPE_ICON = {
+  FULL_LEAVE: '✈',
+  HALF_LEAVE_AM: '½',
+  HALF_LEAVE_PM: '½',
+  WFH: '🏠'
+};
+
+var state = {
+  user: null,
+  admins: [],
+  webAppUrl: '',
+  employees: [],
+  holidays: [],
+  requests: [],
+  monthAnchor: null,
+  stats: null
+};
+
+function $(sel, root) { return (root || document).querySelector(sel); }
+function $$(sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); }
+
+function toast(msg, kind) {
+  var el = $('#toast');
+  el.textContent = msg;
+  el.className = 'toast show ' + (kind || '');
+  clearTimeout(toast._t);
+  toast._t = setTimeout(function () { el.className = 'toast ' + (kind || ''); }, 2500);
+}
+
+function call(fn, payload) {
+  return new Promise(function (resolve, reject) {
+    google.script.run
+      .withSuccessHandler(resolve)
+      .withFailureHandler(function (err) { reject(err); })
+      [fn](payload);
+  });
+}
+
+document.addEventListener('DOMContentLoaded', function () {
+  bootstrap();
+});
+
+function bootstrap(monthIso) {
+  setLoading(true);
+  call('getBootstrap', monthIso || null)
+    .then(function (b) {
+      state.user = b.user;
+      state.admins = b.admins || [];
+      state.webAppUrl = b.webAppUrl || '';
+      if (!b.user || b.user.role === 'UNAUTHORIZED') {
+        renderUnauthorized();
+        return;
+      }
+      state.employees = b.employees;
+      state.holidays = b.holidays;
+      state.requests = b.requests;
+      state.monthAnchor = b.monthAnchor;
+      state.stats = b.stats;
+      renderApp();
+    })
+    .catch(function (err) {
+      toast(err && err.message ? err.message : '載入失敗', 'bad');
+    })
+    .then(function () { setLoading(false); });
+}
+
+function setLoading(on) {
+  $('#app').style.opacity = on ? '0.5' : '1';
+}
+
+function refreshCalendar() {
+  call('getCalendarData', state.monthAnchor)
+    .then(function (b) {
+      state.requests = b.requests;
+      state.holidays = b.holidays;
+      state.stats = b.stats;
+      renderCalendar();
+      renderStats();
+    });
+}
+
+/* ---------------- top-level rendering ---------------- */
+
+function renderUnauthorized() {
+  $('#app').innerHTML =
+    '<div class="unauth-box">'
+    + '<h2>未授權使用</h2>'
+    + '<p>您的 Google 帳號 <b>' + escapeHtml(state.user.email || '(未登入)') + '</b> 未列入員工名單。</p>'
+    + '<p>請聯絡管理員 ' + adminContactHtml() + ' 將您加入後再試。</p>'
+    + '</div>';
+}
+
+function adminContactHtml() {
+  if (!state.admins || state.admins.length === 0) return '(尚未設定)';
+  return state.admins.map(function (a) {
+    var label = escapeHtml(a.name_en || a.email);
+    if (!a.email) return label;
+    return '<a href="mailto:' + escapeAttr(a.email) + '">' + label + '</a>';
+  }).join('、');
+}
+
+function adminContactText() {
+  if (!state.admins || state.admins.length === 0) return '(尚未設定管理員)';
+  return state.admins.map(function (a) { return a.name_en || a.email; }).join(' / ');
+}
+
+function renderApp() {
+  $('#app').innerHTML =
+    headerHtml()
+    + '<div class="container">'
+    + toolbarHtml()
+    + '<div id="stats-area"></div>'
+    + '<div id="months-area"></div>'
+    + legendHtml()
+    + '</div>';
+
+  $('#prevMonth').addEventListener('click', function () { shiftMonth(-1); });
+  $('#nextMonth').addEventListener('click', function () { shiftMonth(1); });
+  $('#todayBtn').addEventListener('click', function () { bootstrap(todayMonthIso()); });
+
+  renderStats();
+  renderCalendar();
+}
+
+function headerHtml() {
+  var u = state.user;
+  var roleClass = u.role === 'ADMIN' ? 'admin' : 'member';
+  var roleLabel = u.role === 'ADMIN' ? '管理員' : '組員';
+  var adminLink = u.role === 'ADMIN'
+    ? '<a class="admin-link" href="' + escapeAttr(state.webAppUrl) + '?page=admin" target="_top">管理面板 ↗</a>'
+    : '';
+  return ''
+    + '<header class="top">'
+    +   '<h1>Team Leave / WFH Planner</h1>'
+    +   '<span class="pill ' + roleClass + '">' + roleLabel + '</span>'
+    +   '<span class="user-info">' + escapeHtml(u.name_en || u.email) + ' &middot; ' + escapeHtml(u.team || '') + '</span>'
+    +   '<span style="margin-left:12px">' + adminLink + '</span>'
+    + '</header>';
+}
+
+function toolbarHtml() {
+  var anchor = state.monthAnchor || '';
+  return ''
+    + '<div class="toolbar">'
+    +   '<button id="prevMonth">← 上一月</button>'
+    +   '<div class="anchor">' + formatMonthLabel(anchor) + '</div>'
+    +   '<button id="nextMonth">下一月 →</button>'
+    +   '<button id="todayBtn">回到本月</button>'
+    +   '<div class="spacer"></div>'
+    + '</div>';
+}
+
+function legendHtml() {
+  return ''
+    + '<div class="legend">'
+    +   '<span><span class="sw" style="background:var(--consultant)"></span>顧問組</span>'
+    +   '<span><span class="sw" style="background:var(--maintenance)"></span>維護組</span>'
+    +   '<span><span class="sw" style="background:var(--holiday)"></span>國定假日</span>'
+    +   '<span><span class="sw" style="background:var(--makeup)"></span>補行上班</span>'
+    +   '<span>✈ 請假 &nbsp; ½ 半天 &nbsp; 🏠 WFH</span>'
+    + '</div>';
+}
+
+/* ---------------- stats ---------------- */
+
+function renderStats() {
+  var s = state.stats || { perPerson: [], perTeam: [] };
+  var meName = state.user.name_en;
+  var me = (s.perPerson || []).filter(function (p) { return p.name_en === meName; })[0];
+
+  var html = '<div class="stats">';
+  html += statCardHtml('我這個月', me
+    ? [
+        { label: '請假', val: me.leaveDays + ' 天' },
+        { label: 'WFH', val: me.wfhDays + ' 天' }
+      ]
+    : [{ label: '本月', val: '無紀錄' }]
+  );
+  s.perTeam.forEach(function (t) {
+    html += teamCardHtml(t);
+  });
+  html += '</div>';
+  $('#stats-area').innerHTML = html;
+}
+
+function statCardHtml(title, items) {
+  var html = '<div class="stat-card"><h3>' + escapeHtml(title) + '</h3><div class="nums">';
+  items.forEach(function (it) {
+    html += '<div><b>' + escapeHtml(String(it.val)) + '</b><div style="font-size:11px;color:var(--muted)">' + escapeHtml(it.label) + '</div></div>';
+  });
+  html += '</div></div>';
+  return html;
+}
+
+function teamCardHtml(t) {
+  var teamLabel = t.team === 'CONSULTANT' ? '顧問組' : (t.team === 'MAINTENANCE' ? '維護組' : t.team);
+  var rows = (t.members || [])
+    .filter(function (m) { return m.leaveDays || m.wfhDays; })
+    .sort(function (a, b) { return (b.leaveDays + b.wfhDays) - (a.leaveDays + a.wfhDays); })
+    .map(function (m) {
+      return '<tr><td>' + escapeHtml(m.name_en) + '</td>'
+        + '<td class="num">' + m.leaveDays + '</td>'
+        + '<td class="num">' + m.wfhDays + '</td></tr>';
+    }).join('');
+  var totals = '<tr><td><b>合計</b></td><td class="num"><b>' + t.leaveDays + '</b></td><td class="num"><b>' + t.wfhDays + '</b></td></tr>';
+  return ''
+    + '<div class="stat-card"><h3>' + escapeHtml(teamLabel) + ' 本月</h3>'
+    + '<table class="team-table">'
+    + '<tr><th></th><th class="num">假</th><th class="num">WFH</th></tr>'
+    + (rows || '<tr><td colspan="3" style="color:var(--muted)">本月無紀錄</td></tr>')
+    + totals
+    + '</table></div>';
+}
+
+/* ---------------- calendar ---------------- */
+
+function renderCalendar() {
+  var anchor = parseIso(state.monthAnchor);
+  var html = '<div class="months">';
+  [-1, 0, 1].forEach(function (off) {
+    var m = new Date(anchor.getFullYear(), anchor.getMonth() + off, 1);
+    html += monthHtml(m);
+  });
+  html += '</div>';
+  $('#months-area').innerHTML = html;
+  $$('.day[data-date]').forEach(function (el) {
+    el.addEventListener('click', function () { openDayModal(el.getAttribute('data-date')); });
+  });
+}
+
+function monthHtml(monthStart) {
+  var year = monthStart.getFullYear();
+  var month = monthStart.getMonth();
+  var firstDow = new Date(year, month, 1).getDay();
+  var daysInMonth = new Date(year, month + 1, 0).getDate();
+  var todayIso = formatIso(new Date());
+
+  var html = '<div class="month">';
+  html += '<h2>' + year + ' 年 ' + (month + 1) + ' 月</h2>';
+  html += '<div class="dow-row">' + ['日','一','二','三','四','五','六']
+    .map(function (d) { return '<div>' + d + '</div>'; }).join('') + '</div>';
+  html += '<div class="week-row">';
+  for (var i = 0; i < firstDow; i++) html += '<div class="day muted"></div>';
+  for (var d = 1; d <= daysInMonth; d++) {
+    var date = new Date(year, month, d);
+    var iso = formatIso(date);
+    var dow = date.getDay();
+    var holiday = state.holidays.find(function (h) { return h.dateIso === iso; });
+    var isHoliday = holiday && holiday.type === 'HOLIDAY';
+    var isMakeup = holiday && holiday.type === 'MAKEUP_WORKDAY';
+    var classes = ['day'];
+    if (iso === todayIso) classes.push('today');
+    if ((dow === 0 || dow === 6) && !isMakeup) classes.push('weekend');
+    if (isHoliday) classes.push('holiday');
+    if (isMakeup) classes.push('makeup');
+    html += '<div class="' + classes.join(' ') + '" data-date="' + iso + '">';
+    html += '<span class="num">' + d + '</span>';
+    if (holiday && holiday.name) {
+      html += '<div class="hname">' + escapeHtml(holiday.name) + '</div>';
+    }
+    var rs = state.requests.filter(function (r) { return r.dateIso === iso; });
+    rs.forEach(function (r) {
+      var team = teamOf(r.name_en);
+      var cls = team === 'CONSULTANT' ? 'consultant' : (team === 'MAINTENANCE' ? 'maintenance' : 'unknown');
+      html += '<span class="chip ' + cls + '" title="' + escapeHtml(r.name_en + ' · ' + TYPE_LABEL[r.type]) + '">'
+        + (TYPE_ICON[r.type] || '') + ' ' + escapeHtml(r.name_en) + '</span>';
+    });
+    html += '</div>';
+    if ((firstDow + d) % 7 === 0 && d !== daysInMonth) {
+      html += '</div><div class="week-row">';
+    }
+  }
+  var totalCells = firstDow + daysInMonth;
+  var trailing = (7 - (totalCells % 7)) % 7;
+  for (var t = 0; t < trailing; t++) html += '<div class="day muted"></div>';
+  html += '</div></div>';
+  return html;
+}
+
+function teamOf(name) {
+  var e = state.employees.find(function (x) { return x.name_en === name; });
+  return e ? e.team : '';
+}
+
+/* ---------------- modal ---------------- */
+
+function openDayModal(dateIso) {
+  var isAdmin = state.user.role === 'ADMIN';
+  var existing = state.requests.filter(function (r) { return r.dateIso === dateIso; });
+
+  var existingHtml = existing.length === 0
+    ? '<div class="empty">當日無人請假/WFH</div>'
+    : existing.map(function (r) {
+        var team = teamOf(r.name_en);
+        var cls = team === 'CONSULTANT' ? 'consultant' : (team === 'MAINTENANCE' ? 'maintenance' : 'unknown');
+        var del = isAdmin
+          ? '<button class="del" data-id="' + escapeAttr(r.id) + '">刪除</button>'
+          : '';
+        return '<div class="row"><span class="chip ' + cls + '">' + escapeHtml(r.name_en) + '</span>'
+          + '<span>' + escapeHtml(TYPE_LABEL[r.type] || r.type) + '</span>'
+          + (r.note ? '<span style="color:var(--muted)">' + escapeHtml(r.note) + '</span>' : '')
+          + del + '</div>';
+      }).join('');
+
+  var nameField;
+  if (isAdmin) {
+    nameField = '<label>申請人</label><select id="m-name">'
+      + state.employees.map(function (e) {
+          return '<option value="' + escapeAttr(e.name_en) + '">'
+            + escapeHtml(e.name_en + (e.name_zh ? ' (' + e.name_zh + ')' : '')) + '</option>';
+        }).join('')
+      + '</select>';
+  } else {
+    nameField = '<label>申請人</label><input type="text" value="' + escapeAttr(state.user.name_en) + '" disabled>'
+      + '<input type="hidden" id="m-name" value="' + escapeAttr(state.user.name_en) + '">';
+  }
+
+  var primaryLabel = isAdmin ? '寫入紀錄' : '檢查是否可申請';
+  var noteField = isAdmin ? '<label>備註(可選)</label><textarea id="m-note" placeholder="原因 / 備註"></textarea>' : '';
+
+  var html = ''
+    + '<header><h2>' + dateIso + ' (' + weekdayName(dateIso) + ')</h2>'
+    +   '<button class="close" id="m-close">×</button>'
+    + '</header>'
+    + '<div class="body">'
+    +   '<label>當日紀錄</label>'
+    +   '<div class="existing-list">' + existingHtml + '</div>'
+    +   nameField
+    +   '<label>類型</label>'
+    +   '<select id="m-type">'
+    +     '<option value="FULL_LEAVE">請假(全天)</option>'
+    +     '<option value="HALF_LEAVE_AM">半天請假 (上午)</option>'
+    +     '<option value="HALF_LEAVE_PM">半天請假 (下午)</option>'
+    +     '<option value="WFH">WFH</option>'
+    +   '</select>'
+    +   noteField
+    +   '<div id="m-verdict"></div>'
+    + '</div>'
+    + '<div class="footer">'
+    +   '<button class="btn" id="m-cancel">關閉</button>'
+    +   '<button class="btn primary" id="m-submit">' + primaryLabel + '</button>'
+    + '</div>';
+
+  $('#modal').innerHTML = html;
+  $('#scrim').classList.add('show');
+
+  $('#m-close').addEventListener('click', closeModal);
+  $('#m-cancel').addEventListener('click', closeModal);
+  $('#m-submit').addEventListener('click', function () {
+    if (isAdmin) submitAdminWrite(dateIso, false);
+    else submitMemberCheck(dateIso);
+  });
+  $$('.existing-list .del').forEach(function (b) {
+    b.addEventListener('click', function () {
+      if (!confirm('確定刪除此筆紀錄?')) return;
+      call('deleteRequest', b.getAttribute('data-id'))
+        .then(function (res) {
+          if (!res || !res.ok) {
+            toast('刪除失敗:找不到該筆紀錄', 'bad');
+            return;
+          }
+          toast('已刪除', 'good');
+          closeModal();
+          refreshCalendar();
+        })
+        .catch(function (e) { toast(e.message || '刪除失敗', 'bad'); });
+    });
+  });
+}
+
+function closeModal() {
+  $('#scrim').classList.remove('show');
+  $('#modal').innerHTML = '';
+}
+
+function submitMemberCheck(dateIso) {
+  var type = $('#m-type').value;
+  var name = $('#m-name').value;
+  $('#m-submit').disabled = true;
+  call('checkRequest', { name_en: name, date: dateIso, type: type })
+    .then(function (v) { renderVerdict(v, /* isMember */ true); })
+    .catch(function (e) { toast(e.message || '檢查失敗', 'bad'); })
+    .then(function () { $('#m-submit').disabled = false; });
+}
+
+function submitAdminWrite(dateIso, override) {
+  var type = $('#m-type').value;
+  var name = $('#m-name').value;
+  var note = ($('#m-note') && $('#m-note').value) || '';
+  $('#m-submit').disabled = true;
+  call('addRequest', { name_en: name, date: dateIso, type: type, note: note, override: !!override })
+    .then(function (res) {
+      if (!res.ok) {
+        renderVerdict(res.verdict, /* isMember */ false, true);
+        $('#m-submit').disabled = false;
+        return;
+      }
+      toast('已寫入紀錄', 'good');
+      closeModal();
+      refreshCalendar();
+    })
+    .catch(function (e) {
+      toast(e.message || '寫入失敗', 'bad');
+      $('#m-submit').disabled = false;
+    });
+}
+
+function renderVerdict(verdict, isMember, allowOverride) {
+  var el = $('#m-verdict');
+  if (verdict.allowed) {
+    var msg = isMember
+      ? '✓ 可以申請。請通知主管 ' + adminContactText() + ' 為你登記。'
+      : '✓ 通過所有規則,可直接寫入。';
+    el.innerHTML = '<div class="verdict allowed">' + escapeHtml(msg) + '</div>';
+  } else {
+    var lis = verdict.reasons.map(function (r) { return '<li>' + escapeHtml(r) + '</li>'; }).join('');
+    var prefix = isMember
+      ? '✗ 無法申請。如有需求請與主管協調。原因:'
+      : '⚠ 違反以下規則:';
+    var html = '<div class="verdict rejected">' + prefix + '<ul>' + lis + '</ul>';
+    if (allowOverride) {
+      html += '<div style="margin-top:8px"><button class="btn danger" id="m-override">仍要覆蓋寫入 (OVERRIDE)</button></div>';
+    }
+    html += '</div>';
+    el.innerHTML = html;
+    if (allowOverride) {
+      $('#m-override').addEventListener('click', function () {
+        if (!confirm('確定覆蓋規則並寫入?')) return;
+        submitAdminWrite(currentModalDate(), true);
+      });
+    }
+  }
+}
+
+function currentModalDate() {
+  var hd = $('#modal header h2');
+  return hd ? hd.textContent.slice(0, 10) : '';
+}
+
+/* ---------------- helpers ---------------- */
+
+function shiftMonth(delta) {
+  var d = parseIso(state.monthAnchor);
+  var next = new Date(d.getFullYear(), d.getMonth() + delta, 1);
+  bootstrap(formatIso(next).slice(0, 7));
+}
+
+function todayMonthIso() {
+  return formatIso(new Date()).slice(0, 7);
+}
+
+function parseIso(s) {
+  var m = /^(\d{4})-(\d{2})(?:-(\d{2}))?/.exec(String(s || ''));
+  if (!m) return new Date();
+  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3] || 1));
+}
+
+function formatIso(d) {
+  var mm = d.getMonth() + 1;
+  var dd = d.getDate();
+  return d.getFullYear() + '-' + (mm < 10 ? '0' + mm : mm) + '-' + (dd < 10 ? '0' + dd : dd);
+}
+
+function formatMonthLabel(iso) {
+  if (!iso) return '';
+  var d = parseIso(iso);
+  return d.getFullYear() + ' 年 ' + (d.getMonth() + 1) + ' 月';
+}
+
+function weekdayName(iso) {
+  var d = parseIso(iso);
+  return ['週日','週一','週二','週三','週四','週五','週六'][d.getDay()];
+}
+
+function escapeHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+function escapeAttr(s) { return escapeHtml(s); }
+</script>
